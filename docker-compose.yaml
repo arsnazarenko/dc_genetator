@@ -29,7 +29,7 @@ services:
       # Автосоздание топиков при первом обращении            
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
       # Количество партиций по умолчанию для новых топиков
-      KAFKA_NUM_PARTITIONS: 3
+      KAFKA_NUM_PARTITIONS: 1
       # Уникальный ID кластера (требуется для KRaft, рандомный)
       CLUSTER_ID: "4L6g3nShT-eMCtK--X86sw"
     volumes:
@@ -56,7 +56,7 @@ services:
     environment:
       KAFKA_ADDRESS: kafka:9092
       TOPIC: dc_metrics
-      TIMEOUT: 500
+      TIMEOUT: 250
     restart: always
 
 volumes:

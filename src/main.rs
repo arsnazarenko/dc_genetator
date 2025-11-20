@@ -1,82 +1,65 @@
-use clap::{Parser, Subcommand};
+use clap::{Parser, ValueEnum};
 use samsa::prelude::TcpConnection;
-use std::time::Duration;
+use std::{time::Duration, vec};
 use tokio::time;
 
 mod dc_metrics;
 
 #[derive(Parser)]
-#[command(name = "dc-generator-native")]
-#[command(about = "Real-time traffic generator for Kafka (native Rust)")]
+#[command(name = "dc-generator")]
+#[command(about = "Real-time data center metrics traffic generator")]
 struct Args {
-    #[command(subcommand)]
-    command: Commands,
+    /// Output mode
+    #[arg(short, long)]
+    mode: Mode,
+
+    /// Kafka topic name (required when mode is kafka)
+    #[arg(long, required_if_eq("mode", "kafka"))]
+    topic: Option<String>,
+
+    /// Kafka address (required when mode is kafka)
+    #[arg(long, required_if_eq("mode", "kafka"))]
+    address: Option<String>,
+
+    /// Timeout between messages in milliseconds
+    #[arg(short, long, default_value_t = 500)]
+    timeout: u64,
+
+    /// Number of zones in data center
+    #[arg(long, default_value_t = 4)]
+    zones: usize,
+
+    /// Number of servers per zone
+    #[arg(long, default_value_t = 100)]
+    servers_per_zone: usize,
 }
 
-#[derive(Subcommand)]
-enum Commands {
-    /// Output messages to stdout
-    Stdout {
-        /// Timeout between messages in milliseconds
-        #[arg(short, long, default_value_t = 500)]
-        timeout: u64,
-
-        /// Number of zones in data center
-        #[arg(long, default_value_t = 4)]
-        zones: usize,
-
-        /// Number of servers per zone
-        #[arg(long, default_value_t = 10)]
-        servers_per_zone: usize,
-    },
-    /// Send messages to Kafka
-    Kafka {
-        /// Kafka topic name
-        #[arg(short, long, default_value = "dc_metrics")]
-        topic: String,
-
-        /// Kafka address
-        #[arg(short, long, default_value = "127.0.0.1:9092")]
-        address: String,
-
-        /// Timeout between messages in milliseconds
-        #[arg(short, long, default_value_t = 500)]
-        timeout: u64,
-
-        /// Number of zones in data center
-        #[arg(long, default_value_t = 4)]
-        zones: usize,
-
-        /// Number of servers per zone
-        #[arg(long, default_value_t = 10)]
-        servers_per_zone: usize,
-    },
+#[derive(Clone, Debug, ValueEnum)]
+enum Mode {
+    Stdout,
+    Kafka,
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
-    match args.command {
-        Commands::Stdout {
-            timeout,
-            zones,
-            servers_per_zone,
-        } => {
-            stdout_mode(timeout, zones, servers_per_zone);
+    match args.mode {
+        Mode::Stdout => {
+            stdout_mode(args.timeout, args.zones, args.servers_per_zone);
         }
-        Commands::Kafka {
-            topic,
-            address,
-            timeout,
-            zones,
-            servers_per_zone,
-        } => {
-            kafka_mode(timeout, &topic, &address, zones, servers_per_zone)
-                .await
-                .map_err(|e| {
-                    std::io::Error::other(format!("Kafka client error: {}", e.to_string()))
-                })?;
+        Mode::Kafka => {
+            let topic = args.topic.unwrap();
+            let address = args.address.unwrap();
+            kafka_mode(
+                args.timeout,
+                &topic,
+                &address,
+                args.zones,
+                args.servers_per_zone,
+            )
+            .await
+            .map_err(|e| std::io::Error::other(format!("Kafka client error: {}", e.to_string())))?;
         }
     }
 
@@ -125,17 +108,20 @@ async fn kafka_mode(
     .await;
 
     println!("Producer connected to kafka on address {}", address);
-    let producer = std::sync::Arc::new(producer);
+
+    let shared_producer = std::sync::Arc::new(producer);
     let shared_topic = std::sync::Arc::new(topic.to_string());
-    let mut handles = vec![];
+
+    let mut handles = Vec::with_capacity(zones);
 
     for zone_num in 0..zones {
-        let zone = format!("zone-{}", (b'A' + zone_num as u8) as char);
-        let producer = producer.clone();
+        let zone_name = format!("zone-{}", (b'A' + zone_num as u8) as char);
+        let producer = shared_producer.clone();
         let topic_cloned = shared_topic.clone();
 
         let handle = tokio::spawn(async move {
-            let mut metrics_gen = dc_metrics::ServerMetricsGenerator::new(zone, servers_per_zone);
+            let mut metrics_gen =
+                dc_metrics::ServerMetricsGenerator::new(zone_name, servers_per_zone);
             let mut interval = time::interval(Duration::from_millis(timeout));
             loop {
                 interval.tick().await;
@@ -143,8 +129,8 @@ async fn kafka_mode(
                 let message = samsa::prelude::ProduceMessage {
                     topic: topic_cloned.to_string(),
                     partition_id: 0,
-                    key: Some(metric.message.into()),
-                    value: Some(metric.host_id.into()),
+                    key: Some(metric.host_id.into()),
+                    value: Some(metric.message.into()),
                     headers: vec![],
                 };
                 producer.produce(message).await;
@@ -152,7 +138,6 @@ async fn kafka_mode(
         });
         handles.push(handle);
     }
-
     for handle in handles {
         let _ = handle.await;
     }
