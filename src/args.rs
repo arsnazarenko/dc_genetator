@@ -1,55 +1,67 @@
-use clap::{Parser, ValueEnum};
+use clap::{Args, Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(name = "dc-generator")]
-#[command(about = "Real-time data center metrics traffic generator")]
-pub struct Args {
-    /// Output mode
-    #[arg(short, long)]
-    pub mode: Mode,
+#[command(about = "Real-time traffic generator for Kafka")]
+pub struct CliArgs {
+    #[command(subcommand)]
+    pub command: Commands,
+}
 
-    /// Kafka topic name (required when mode is kafka)
-    #[arg(long, required_if_eq("mode", "kafka"))]
-    pub topic: Option<String>,
-
-    /// Kafka address (required when mode is kafka)
-    #[arg(long, required_if_eq("mode", "kafka"))]
-    pub address: Option<String>,
-
-    /// Number of topic partitions
-    #[arg(long, required_if_eq("mode", "kafka"))]
-    pub partitions: Option<usize>,
-
-    /// Number of topic replicas
-    #[arg(long, required_if_eq("mode", "kafka"))]
-    pub replicas: Option<usize>,
-
+#[derive(Args)]
+pub struct GenParams {
     /// Timeout between messages in milliseconds
     #[arg(short, long, default_value_t = 500)]
     pub timeout: u64,
 
     /// Number of zones in data center
-    #[arg(long, default_value_t = 4)]
-    pub zones: usize,
+    #[arg(short, long, default_value_t = 4)]
+    pub zones: u8,
 
     /// Number of servers per zone
-    #[arg(long, default_value_t = 100)]
-    pub servers_per_zone: usize,
+    #[arg(short, long, default_value_t = 80)]
+    pub servers_per_zone: u16,
 }
 
-#[derive(Clone, Debug, ValueEnum)]
-pub enum Mode {
-    Stdout,
-    Kafka,
+#[derive(Subcommand)]
+pub enum Commands {
+    /// Output messages to stdout
+    Stdout {
+        // parameters for generator
+        #[clap(flatten)]
+        dc_gen_params: GenParams,
+    },
+    /// Send messages to Kafka
+    Kafka {
+        // Kafka address (required when mode is kafka)
+        #[arg(long, value_parser = parse_kafka_brokers)]
+        brokers: KafkaBrokers,
+
+        // Kafka topic
+        #[arg(long, default_value = "dc_metrics")]
+        topic: String,
+
+        // Number of topic partitions
+        #[arg(short, long, default_value_t = 3)]
+        partitions: u16,
+
+        // Number of topic replicas
+        #[arg(short, long, default_value_t = 3)]
+        replicas: u8,
+
+        // parameters for generator
+        #[clap(flatten)]
+        dc_gen_params: GenParams,
+    },
 }
 
-pub fn parse() -> Args {
-    Args::parse()
+pub fn parse() -> CliArgs {
+    CliArgs::parse()
 }
 
-pub type KafkaBrokers = Vec<samsa::prelude::BrokerAddress>;
+type KafkaBrokers = Vec<samsa::prelude::BrokerAddress>;
 
-pub fn parse_kafka_brokers(address_str: &str) -> Result<KafkaBrokers, clap::Error> {
+fn parse_kafka_brokers(address_str: &str) -> Result<KafkaBrokers, clap::Error> {
     let brokers = address_str
         .trim()
         .split(",")

@@ -11,31 +11,42 @@ mod dc_metrics;
 
 const CLIENT_ID: &str = "Data center metrics producer";
 const CORRELATION_ID: i32 = 1;
-// const DEFAULT_REPLICATION_FACTOR: i16 = 3;
-// const DEFAULT_PARTITIONS_NUM: u32 = 3;
-// const DEFAULT_TOPIC_NAME: &str = "dc_metrics";
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = args::parse();
 
-    match args.mode {
-        args::Mode::Stdout => {
-            stdout_mode(args.timeout, args.zones, args.servers_per_zone);
+    match args.command {
+        args::Commands::Stdout {
+            dc_gen_params:
+                args::GenParams {
+                    timeout,
+                    zones,
+                    servers_per_zone,
+                },
+        } => {
+            stdout_mode(timeout, zones, servers_per_zone);
         }
-        args::Mode::Kafka => {
-            let topic = args.topic.unwrap();
-            let partitions = args.partitions.unwrap();
-            let replicas = args.replicas.unwrap();
-            let brokers = args::parse_kafka_brokers(&args.address.unwrap())?;
+        args::Commands::Kafka {
+            brokers,
+            topic,
+            partitions,
+            replicas,
+            dc_gen_params:
+                args::GenParams {
+                    timeout,
+                    zones,
+                    servers_per_zone,
+                },
+        } => {
             kafka_mode(
                 brokers,
                 &topic,
                 partitions,
                 replicas,
-                args.zones,
-                args.servers_per_zone,
-                args.timeout,
+                zones,
+                servers_per_zone,
+                timeout,
             )
             .await
             .map_err(|e| std::io::Error::other(format!("Kafka client error: {}", e.to_string())))?;
@@ -45,12 +56,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn stdout_mode(timeout: u64, zones: usize, servers_per_zone: usize) {
+fn stdout_mode(timeout: u64, zones: u8, servers_per_zone: u16) {
     let gen_iterator = (0..zones)
         .into_iter()
         .map(|zone_num| {
             let zone_name = format!("zone-{}", (b'A' + zone_num as u8) as char);
-            dc_metrics::ServerMetricsGenerator::new(zone_name, servers_per_zone)
+            dc_metrics::ServerMetricsGenerator::new(zone_name, servers_per_zone as usize)
         })
         .cycle();
 
@@ -64,10 +75,10 @@ fn stdout_mode(timeout: u64, zones: usize, servers_per_zone: usize) {
 async fn kafka_mode(
     brokers: Vec<samsa::prelude::BrokerAddress>,
     topic: &str,
-    partitions: usize,
-    replicas: usize,
-    zones: usize,
-    servers_per_zone: usize,
+    partitions: u16,
+    replicas: u8,
+    zones: u8,
+    servers_per_zone: u16,
     timeout: u64,
 ) -> samsa::prelude::Result<()> {
     let connection = TcpConnection::new_(brokers.clone()).await?;
@@ -101,7 +112,7 @@ async fn kafka_mode(
     let shared_producer = std::sync::Arc::new(producer);
     let shared_topic = std::sync::Arc::new(topic.to_string());
 
-    let mut handles = Vec::with_capacity(zones);
+    let mut handles = Vec::with_capacity(zones as usize);
 
     for zone_num in 0..zones {
         let zone_name = format!("zone-{}", (b'A' + zone_num as u8) as char);
@@ -110,7 +121,7 @@ async fn kafka_mode(
 
         let handle = tokio::spawn(async move {
             let mut metrics_gen =
-                dc_metrics::ServerMetricsGenerator::new(zone_name, servers_per_zone);
+                dc_metrics::ServerMetricsGenerator::new(zone_name, servers_per_zone as usize);
             let mut interval = time::interval(Duration::from_millis(timeout));
             loop {
                 interval.tick().await;
@@ -133,10 +144,10 @@ async fn kafka_mode(
     Ok(())
 }
 
-fn get_partition<T: Hash>(key: &T, partitions_num: usize) -> usize {
+fn get_partition<T: Hash>(key: &T, partitions_num: u16) -> u16 {
     let mut hasher = std::hash::DefaultHasher::default();
     key.hash(&mut hasher);
-    let h = hasher.finish() as usize;
+    let h = hasher.finish() as u16;
     h % partitions_num
 }
 
