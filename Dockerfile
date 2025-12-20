@@ -8,6 +8,7 @@ RUN apk add musl-dev
 
 COPY Cargo.toml Cargo.lock ./
 COPY src src
+RUN cargo fetch
 RUN cargo build --target x86_64-unknown-linux-musl --release
 
 FROM alpine:latest
